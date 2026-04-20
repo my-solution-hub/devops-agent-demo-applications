@@ -1,0 +1,43 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOrigins: "*"
+            allowedMethods: "*"
+            allowedHeaders: "*"
+      routes:
+        - id: cat-profile
+          uri: ${CAT_PROFILE_SERVICE_URL:http://cat-profile:8081}
+          predicates:
+            - Path=/api/cats/**
+          filters:
+            - StripPrefix=1
+        - id: device-service
+          uri: ${DEVICE_SERVICE_URL:http://device-service:8082}
+          predicates:
+            - Path=/api/devices/**
+          filters:
+            - StripPrefix=1
+        - id: feeding-service
+          uri: ${FEEDING_SERVICE_URL:http://feeding-service:8083}
+          predicates:
+            - Path=/api/feeding/**
+          filters:
+            - StripPrefix=1
+        - id: health-monitor
+          uri: ${HEALTH_MONITOR_SERVICE_URL:http://health-monitor:8084}
+          predicates:
+            - Path=/api/health/**
+          filters:
+            - StripPrefix=1
+
+logging:
+  level:
+    org.springframework.cloud.gateway: INFO

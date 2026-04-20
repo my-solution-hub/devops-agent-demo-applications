@@ -3,3 +3,5 @@ target/
 *.class
 *.jar
 *.jar.original
+node_modules/
+dist/

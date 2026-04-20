@@ -30,11 +30,6 @@ services:
     command: "-jar DynamoDBLocal.jar -sharedDb -inMemory"
     ports:
       - "8000:8000"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/shell/ || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
     networks:
       - cat-demo
 
@@ -42,8 +37,7 @@ services:
     image: amazon/aws-cli:latest
     container_name: cat-demo-dynamodb-init
     depends_on:
-      dynamodb-local:
-        condition: service_healthy
+      - dynamodb-local
     environment:
       AWS_ACCESS_KEY_ID: local
       AWS_SECRET_ACCESS_KEY: local
@@ -110,7 +104,7 @@ services:
       postgres:
         condition: service_healthy
       dynamodb-local:
-        condition: service_healthy
+        condition: service_started
     networks:
       - cat-demo
 
@@ -138,7 +132,7 @@ services:
       postgres:
         condition: service_healthy
       dynamodb-local:
-        condition: service_healthy
+        condition: service_started
     networks:
       - cat-demo
 
@@ -157,7 +151,7 @@ services:
       PORT: "8084"
     depends_on:
       dynamodb-local:
-        condition: service_healthy
+        condition: service_started
     networks:
       - cat-demo
 

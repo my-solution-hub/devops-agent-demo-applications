@@ -1,19 +1,20 @@
-# Design Document: Smart Home Cat Demo
+--# Design Document: Smart Home Cat Demo
 
 ## Overview
 
 Smart Home Cat Demo is an AI-first microservice demo application for managing cat-care IoT devices through natural language interaction. The system showcases three distinct AI agent patterns — LangGraph stateful workflow with embedded RAG, Strands multi-agent collaboration on AWS AgentCore, and a simple RAG pipeline — applied to a conversational agent that controls simulated cat-care devices.
 
-The application is structured as a polyglot monorepo producing deployment artifacts (Docker images, Kubernetes manifests, ECS task definitions) targeting pre-existing AWS infrastructure provisioned by a sibling Terraform project. The backend uses Spring Boot (Java), Python Django, and Go microservices deployed on EKS, with React frontends on ECS Fargate.
+The application is structured as a polyglot monorepo producing deployment artifacts (Docker images, Kubernetes manifests, ECS task definitions, Lambda deployment packages) targeting pre-existing AWS infrastructure provisioned by a sibling Terraform project. The backend uses Spring Boot (Java), Python Django, and Go microservices distributed across EKS, ECS Fargate, and Lambda, with React frontends on ECS Fargate. The system demonstrates polyglot persistence by combining PostgreSQL (relational/structured data) with DynamoDB (time-series/event data) across services.
 
 ### Key Design Decisions
 
-1. **Application code only** — All AWS infrastructure (VPC, EKS, ECS, OIDC, IAM) lives in the sibling `devops-agent-demo-infra` repo. This project produces deployment artifacts only.
-2. **REST-based device simulation** — Devices are data records in DynamoDB. Commands and telemetry flow through REST API calls to the Device Service. No message broker is needed.
+1. **Application code only** — All AWS infrastructure (VPC, EKS, ECS, Lambda, OIDC, IAM) lives in the sibling `devops-agent-demo-infra` repo. This project produces deployment artifacts only.
+2. **REST-based device simulation** — Devices are data records across PostgreSQL (registry) and DynamoDB (commands, telemetry, shadow). Commands and telemetry flow through REST API calls to the Device Service. No message broker is needed.
 3. **Three AI agent patterns** — LangGraph workflow (graph-based orchestration with RAG), Strands Agents (multi-agent collaboration), and a unified AgentCore entrypoint for routing between them.
 4. **Polyglot microservices** — Spring Boot for API Gateway and Cat Profile, Django for Feeding and Health Monitor, Go for Device Service.
-5. **Multi-compute deployment** — EKS for microservices, ECS Fargate for frontends and Device Simulator.
-6. **Cognito auth** — Owner and admin roles with JWT-based access control across all frontends and APIs.
+5. **Dual storage pattern (polyglot persistence)** — PostgreSQL for relational/structured data (cat profiles with JPA/Hibernate, feeding schedules with Django ORM, device registry with pgx/sqlx) and DynamoDB for high-throughput time-series/event data (telemetry, commands, feeding events, health metrics, health alerts). This demonstrates combining an RDBMS with a NoSQL store in the same system.
+6. **Multi-compute distribution** — Services are distributed across all four compute types to showcase each: EKS for traditional long-running Spring Boot services (API Gateway, Cat Profile), ECS Fargate for containerized Django services (Feeding, Health Monitor) and React frontends (Device Simulator, Admin Console), Lambda for lightweight event-driven Go service (Device Service), and AgentCore Runtime for AI agents (LangGraph, Strands).
+7. **Cognito auth** — Owner and admin roles with JWT-based access control across all frontends and APIs.
 
 ## Architecture
 
@@ -50,16 +51,23 @@ graph TB
         DA[Device Agent]
     end
 
-    subgraph "Polyglot Microservices (EKS)"
+    subgraph "EKS Cluster"
         APIGW[API Gateway Service<br/>Spring Boot / Java]
         CPS[Cat Profile Service<br/>Spring Boot / Java]
-        DS[Device Service<br/>Go]
+    end
+
+    subgraph "ECS Fargate (Services)"
         FS[Feeding Service<br/>Django / Python]
         HMS[Health Monitor Service<br/>Django / Python]
     end
 
+    subgraph "Lambda"
+        DS[Device Service<br/>Go]
+    end
+
     subgraph "Data Layer"
-        DDB[(DynamoDB)]
+        PG[(PostgreSQL<br/>Relational Data)]
+        DDB[(DynamoDB<br/>Time-Series / Events)]
     end
 
     subgraph "Auth"
@@ -91,8 +99,10 @@ graph TB
     APIGW --> FS
     APIGW --> HMS
 
-    CPS --> DDB
+    CPS --> PG
+    DS --> PG
     DS --> DDB
+    FS --> PG
     FS --> DDB
     HMS --> DDB
 
@@ -118,6 +128,7 @@ sequenceDiagram
     participant APIGW as API Gateway Service
     participant CPS as Cat Profile Service
     participant DS as Device Service
+    participant PG as PostgreSQL
     participant DDB as DynamoDB
 
     User->>ChatUI: "Feed Whiskers 50g"
@@ -129,7 +140,9 @@ sequenceDiagram
     LG->>LG: Intent Node → "device_command"
     LG->>APIGW: GET /cats?name=Whiskers
     APIGW->>CPS: Lookup cat profile
-    CPS-->>APIGW: Cat profile (feeder_device_id)
+    CPS->>PG: Query cat profile
+    PG-->>CPS: Cat profile (feeder_device_id)
+    CPS-->>APIGW: Cat profile data
     APIGW-->>LG: Cat profile data
     LG->>RAG: Query "feeding guidelines for breed X"
     RAG->>VS: Similarity search
@@ -155,9 +168,6 @@ graph LR
         direction TB
         A1[API Gateway<br/>Spring Boot]
         A2[Cat Profile<br/>Spring Boot]
-        A3[Device Service<br/>Go]
-        A4[Feeding Service<br/>Django]
-        A5[Health Monitor<br/>Django]
     end
 
     subgraph "ECS Fargate"
@@ -165,6 +175,13 @@ graph LR
         B1[Chatbot UI<br/>React + Nginx]
         B2[Admin Console<br/>React + Nginx]
         B3[Device Simulator<br/>React + Nginx]
+        B4[Feeding Service<br/>Django]
+        B5[Health Monitor<br/>Django]
+    end
+
+    subgraph "Lambda"
+        direction TB
+        C1[Device Service<br/>Go]
     end
 
     subgraph "AgentCore Runtime"
@@ -173,11 +190,16 @@ graph LR
         D2[Strands Agents<br/>Python]
     end
 
+    subgraph "Data Layer"
+        direction TB
+        E1[(PostgreSQL<br/>Relational Data)]
+        E2[(DynamoDB<br/>Time-Series / Events)]
+    end
+
     subgraph "Managed Services"
         direction TB
-        F1[(DynamoDB)]
-        F2[Cognito]
-        F3[ECR]
+        F1[Cognito]
+        F2[ECR]
     end
 ```
 
@@ -345,7 +367,7 @@ class OrchestratorAgent:
 **Language:** Java  
 **Framework:** Spring Boot  
 **Deployment:** EKS  
-**Storage:** DynamoDB
+**Storage:** PostgreSQL (JPA/Hibernate) — cat profiles, owner associations, device assignments
 
 **Endpoints:**
 
@@ -360,8 +382,8 @@ class OrchestratorAgent:
 ### 7. Device Service (`services/device/`)
 
 **Language:** Go  
-**Deployment:** EKS  
-**Storage:** DynamoDB
+**Deployment:** Lambda  
+**Storage:** PostgreSQL (pgx/sqlx) — device registry, metadata, cat assignments; DynamoDB — device commands, telemetry, device shadow (desired/reported state)
 
 **Endpoints:**
 
@@ -378,8 +400,8 @@ class OrchestratorAgent:
 
 **Language:** Python  
 **Framework:** Django  
-**Deployment:** EKS  
-**Storage:** DynamoDB
+**Deployment:** ECS Fargate  
+**Storage:** PostgreSQL (Django ORM) — feeding schedules; DynamoDB — feeding events (append-only log)
 
 **Endpoints:**
 
@@ -401,8 +423,8 @@ class OrchestratorAgent:
 
 **Language:** Python  
 **Framework:** Django  
-**Deployment:** EKS  
-**Storage:** DynamoDB
+**Deployment:** ECS Fargate  
+**Storage:** DynamoDB — health metrics (time-series), health alerts (event-driven)
 
 **Endpoints:**
 
@@ -420,7 +442,7 @@ class OrchestratorAgent:
 
 ### 10. Device Service Command Handling (`services/device/`)
 
-The Device Service handles device commands via REST endpoints in addition to its CRUD responsibilities (described in component 7 above).
+The Device Service (deployed on Lambda) handles device commands via REST endpoints in addition to its CRUD responsibilities (described in component 7 above).
 
 **Command Endpoints:**
 
@@ -501,8 +523,10 @@ type CommandRecord struct {
 | Workflow | Trigger | Actions |
 |----------|---------|---------|
 | `ci.yml` | Pull request | Lint, unit test, build validation |
-| `deploy-services.yml` | Push to main | Build images → push to ECR → deploy to EKS |
-| `deploy-frontends.yml` | Push to main | Build images → push to ECR → deploy to ECS |
+| `deploy-services.yml` | Push to main | Build images → push to ECR → deploy to EKS (Spring Boot services) |
+| `deploy-ecs-services.yml` | Push to main | Build images → push to ECR → deploy to ECS Fargate (Django services) |
+| `deploy-frontends.yml` | Push to main | Build images → push to ECR → deploy to ECS Fargate (React apps) |
+| `deploy-lambda.yml` | Push to main | Build Go binary → package → deploy to Lambda (Device Service) |
 | `deploy-agents.yml` | Push to main | Build agent packages → deploy to AgentCore |
 
 **OIDC Authentication:**
@@ -512,48 +536,81 @@ type CommandRecord struct {
 
 ## Data Models
 
-### Cat Profile (DynamoDB: `cat-profiles`)
+### PostgreSQL Tables
+
+#### Cat Profile (PostgreSQL: `cat_profiles`)
+
+```sql
+CREATE TABLE cat_profiles (
+    cat_id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    owner_id     VARCHAR(255) NOT NULL,  -- Cognito user ID
+    name         VARCHAR(255) NOT NULL,
+    breed        VARCHAR(255),
+    age_months   INTEGER,
+    weight_kg    NUMERIC(5,2) NOT NULL,
+    dietary_restrictions TEXT[],          -- Array of restrictions
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_cat_profiles_owner ON cat_profiles(owner_id);
+```
+
+#### Device Assignment (PostgreSQL: `device_assignments`)
+
+```sql
+CREATE TABLE device_assignments (
+    assignment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    cat_id        UUID NOT NULL REFERENCES cat_profiles(cat_id),
+    device_id     UUID NOT NULL REFERENCES devices(device_id),
+    device_type   VARCHAR(50) NOT NULL,  -- feeder, fountain, litter_box, tracker
+    assigned_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(cat_id, device_type)
+);
+```
+
+#### Device Registry (PostgreSQL: `devices`)
+
+```sql
+CREATE TABLE devices (
+    device_id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    device_type  VARCHAR(50) NOT NULL,   -- feeder, fountain, litter_box, tracker
+    name         VARCHAR(255) NOT NULL,
+    status       VARCHAR(20) NOT NULL DEFAULT 'offline',  -- online, offline, error
+    config       JSONB DEFAULT '{}',
+    last_seen    TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+#### Feeding Schedule (PostgreSQL: `feeding_schedules`)
+
+```sql
+CREATE TABLE feeding_schedules (
+    schedule_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    cat_id              UUID NOT NULL REFERENCES cat_profiles(cat_id),
+    device_id           UUID NOT NULL REFERENCES devices(device_id),
+    meal_times          TEXT[] NOT NULL,          -- Cron expressions or HH:MM times
+    portion_grams       NUMERIC(6,1) NOT NULL,
+    max_daily_grams     NUMERIC(6,1),
+    min_interval_minutes INTEGER,
+    enabled             BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_feeding_schedules_cat ON feeding_schedules(cat_id);
+```
+
+### DynamoDB Tables
+
+#### Device Shadow (DynamoDB: `device-shadows`)
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `cat_id` (PK) | String (UUID) | Unique cat identifier |
-| `owner_id` (GSI) | String | Cognito user ID of the owner |
-| `name` | String | Cat name (required) |
-| `breed` | String | Cat breed |
-| `age_months` | Number | Age in months |
-| `weight_kg` | Number | Current weight in kg (required) |
-| `dietary_restrictions` | List[String] | Dietary restrictions |
-| `assigned_devices` | Map | Device IDs mapped by type |
-| `created_at` | String (ISO 8601) | Creation timestamp |
+| `device_id` (PK) | String (UUID) | Device identifier (references PostgreSQL devices table) |
+| `desired_state` | Map | Desired device state |
+| `reported_state` | Map | Last reported device state |
 | `updated_at` | String (ISO 8601) | Last update timestamp |
-
-### Device (DynamoDB: `devices`)
-
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `device_id` (PK) | String (UUID) | Unique device identifier |
-| `device_type` | String | feeder, fountain, litter_box, tracker |
-| `name` | String | Human-readable device name |
-| `status` | String | online, offline, error |
-| `desired_state` | Map | Desired device state (shadow) |
-| `reported_state` | Map | Last reported device state (shadow) |
-| `assigned_cat_id` | String | Cat this device is assigned to |
-| `config` | Map | Device-specific configuration |
-| `last_seen` | String (ISO 8601) | Last telemetry timestamp |
-| `created_at` | String (ISO 8601) | Registration timestamp |
-
-### Feeding Schedule (DynamoDB: `feeding-schedules`)
-
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `schedule_id` (PK) | String (UUID) | Unique schedule identifier |
-| `cat_id` (GSI) | String | Associated cat |
-| `device_id` | String | Assigned feeder device |
-| `meal_times` | List[String] | Cron expressions or HH:MM times |
-| `portion_grams` | Number | Portion size in grams |
-| `dietary_constraints` | Map | Constraints (max daily, min interval) |
-| `enabled` | Boolean | Whether schedule is active |
-| `created_at` | String (ISO 8601) | Creation timestamp |
 
 ### Feeding Event (DynamoDB: `feeding-events`)
 
@@ -828,14 +885,14 @@ This project uses a dual testing approach combining unit tests with property-bas
 | LangGraph Agent | Intent classification, node logic | Properties 1-4 (routing, state, RAG) | End-to-end workflow with mocked services | Graph structure verification |
 | Strands Agents | Individual agent logic | Properties 5-6 (routing, error handling) | Multi-agent coordination | Agent registry |
 | AgentCore Entrypoint | — | Properties 7-9 (routing, errors, JWT) | Gateway integration | — |
-| Cat Profile Service | CRUD operations, edge cases | Properties 10-11 (round-trip, validation) | DynamoDB integration | — |
+| Cat Profile Service | CRUD operations, edge cases | Properties 10-11 (round-trip, validation) | PostgreSQL integration | — |
 | Health Monitor Service | Metric processing | Properties 12-13 (aggregation, thresholds) | Telemetry pipeline | — |
-| Feeding Service | Schedule logic, edge cases | Properties 14-17 (round-trip, filtering, duplicates) | Scheduler + Device Service integration | — |
-| Device Service | CRUD, shadow logic, command handling | Properties 18-19 (command round-trip, shadow) | DynamoDB integration | — |
+| Feeding Service | Schedule logic, edge cases | Properties 14-17 (round-trip, filtering, duplicates) | PostgreSQL + DynamoDB integration | — |
+| Device Service | CRUD, shadow logic, command handling | Properties 18-19 (command round-trip, shadow) | PostgreSQL + DynamoDB integration, Lambda cold start | — |
 | API Gateway Service | Route matching | Properties 20-23 (routing, headers, auth) | Downstream service integration | Health probes |
 | React Frontends | Component rendering, interactions | — | Cognito auth flow | — |
 | CI/CD Pipelines | — | — | — | Workflow structure, OIDC config |
-| Deployment Artifacts | — | — | Build produces artifacts | Dockerfile, manifest existence |
+| Deployment Artifacts | — | — | Build produces artifacts | Dockerfile, manifest, Lambda package existence |
 
 ### Local Development Testing
 
@@ -844,17 +901,18 @@ The Docker Compose local development setup enables end-to-end testing without AW
 ```yaml
 # docker-compose.yml services for local testing
 services:
-  dynamodb-local:   # DynamoDB local
-  api-gateway:      # Spring Boot
-  cat-profile:      # Spring Boot
-  device-service:   # Go
-  feeding-service:  # Django
-  health-monitor:   # Django
-  langgraph-agent:  # Python LangGraph
-  strands-agents:   # Python Strands
-  chatbot-ui:       # React
-  device-simulator: # React
-  admin-console:    # React
+  postgres:           # PostgreSQL (relational data)
+  dynamodb-local:     # DynamoDB local (time-series/event data)
+  api-gateway:        # Spring Boot (EKS in prod)
+  cat-profile:        # Spring Boot (EKS in prod)
+  device-service:     # Go (Lambda in prod, runs as container locally)
+  feeding-service:    # Django (ECS Fargate in prod)
+  health-monitor:     # Django (ECS Fargate in prod)
+  langgraph-agent:    # Python LangGraph (AgentCore in prod)
+  strands-agents:     # Python Strands (AgentCore in prod)
+  chatbot-ui:         # React (ECS Fargate in prod)
+  device-simulator:   # React (ECS Fargate in prod)
+  admin-console:      # React (ECS Fargate in prod)
 ```
 
 Integration tests run against this local stack. Property tests run in isolation with mocked dependencies.

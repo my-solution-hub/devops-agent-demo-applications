@@ -1,0 +1,250 @@
+# Smart Home Cat Demo — Local Development Docker Compose
+# Starts all services, databases, and frontends for end-to-end local testing.
+
+services:
+  # ── Data Stores ────────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:15
+    container_name: cat-demo-postgres
+    environment:
+      POSTGRES_USER: catdemo
+      POSTGRES_PASSWORD: catdemo
+      POSTGRES_DB: catdemo
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/init-postgres.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U catdemo"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - cat-demo
+
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    container_name: cat-demo-dynamodb
+    command: "-jar DynamoDBLocal.jar -sharedDb -inMemory"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/shell/ || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - cat-demo
+
+  dynamodb-init:
+    image: amazon/aws-cli:latest
+    container_name: cat-demo-dynamodb-init
+    depends_on:
+      dynamodb-local:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+      AWS_DEFAULT_REGION: us-east-1
+    volumes:
+      - ./scripts/init-dynamodb.sh:/scripts/init-dynamodb.sh:ro
+    entrypoint: ["/bin/bash", "/scripts/init-dynamodb.sh"]
+    networks:
+      - cat-demo
+
+  # ── Backend Services ───────────────────────────────────────────────────────
+
+  api-gateway:
+    build:
+      context: services/api-gateway
+    container_name: cat-demo-api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/catdemo
+      SPRING_DATASOURCE_USERNAME: catdemo
+      SPRING_DATASOURCE_PASSWORD: catdemo
+      CAT_PROFILE_SERVICE_URL: http://cat-profile:8081
+      DEVICE_SERVICE_URL: http://device-service:8082
+      FEEDING_SERVICE_URL: http://feeding-service:8083
+      HEALTH_MONITOR_SERVICE_URL: http://health-monitor:8084
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - cat-demo
+
+  cat-profile:
+    build:
+      context: services/cat-profile
+    container_name: cat-demo-cat-profile
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/catdemo
+      SPRING_DATASOURCE_USERNAME: catdemo
+      SPRING_DATASOURCE_PASSWORD: catdemo
+      SERVER_PORT: "8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - cat-demo
+
+  device-service:
+    build:
+      context: services/device
+    container_name: cat-demo-device-service
+    ports:
+      - "8082:8082"
+    environment:
+      DATABASE_URL: postgres://catdemo:catdemo@postgres:5432/catdemo?sslmode=disable
+      DYNAMODB_ENDPOINT: http://dynamodb-local:8000
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+      AWS_REGION: us-east-1
+      PORT: "8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dynamodb-local:
+        condition: service_healthy
+    networks:
+      - cat-demo
+
+  feeding-service:
+    build:
+      context: services/feeding
+    container_name: cat-demo-feeding-service
+    ports:
+      - "8083:8083"
+    environment:
+      DATABASE_URL: postgres://catdemo:catdemo@postgres:5432/catdemo?sslmode=disable
+      DJANGO_SETTINGS_MODULE: feeding.settings
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: catdemo
+      POSTGRES_USER: catdemo
+      POSTGRES_PASSWORD: catdemo
+      DYNAMODB_ENDPOINT: http://dynamodb-local:8000
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+      AWS_REGION: us-east-1
+      PORT: "8083"
+      DEVICE_SERVICE_URL: http://device-service:8082
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dynamodb-local:
+        condition: service_healthy
+    networks:
+      - cat-demo
+
+  health-monitor:
+    build:
+      context: services/health-monitor
+    container_name: cat-demo-health-monitor
+    ports:
+      - "8084:8084"
+    environment:
+      DJANGO_SETTINGS_MODULE: health_monitor.settings
+      DYNAMODB_ENDPOINT: http://dynamodb-local:8000
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+      AWS_REGION: us-east-1
+      PORT: "8084"
+    depends_on:
+      dynamodb-local:
+        condition: service_healthy
+    networks:
+      - cat-demo
+
+  # ── AI Agents ──────────────────────────────────────────────────────────────
+
+  langgraph-agent:
+    build:
+      context: langgraph-agent
+    container_name: cat-demo-langgraph-agent
+    ports:
+      - "8090:8090"
+    environment:
+      API_GATEWAY_URL: http://api-gateway:8080
+      DYNAMODB_ENDPOINT: http://dynamodb-local:8000
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+      AWS_REGION: us-east-1
+      PORT: "8090"
+    depends_on:
+      - api-gateway
+    networks:
+      - cat-demo
+
+  strands-agents:
+    build:
+      context: strands-agents
+    container_name: cat-demo-strands-agents
+    ports:
+      - "8091:8091"
+    environment:
+      API_GATEWAY_URL: http://api-gateway:8080
+      DYNAMODB_ENDPOINT: http://dynamodb-local:8000
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+      AWS_REGION: us-east-1
+      PORT: "8091"
+    depends_on:
+      - api-gateway
+    networks:
+      - cat-demo
+
+  # ── Frontends ──────────────────────────────────────────────────────────────
+
+  chatbot-ui:
+    build:
+      context: chatbot
+    container_name: cat-demo-chatbot-ui
+    ports:
+      - "3000:3000"
+    environment:
+      REACT_APP_API_GATEWAY_URL: http://localhost:8080
+      REACT_APP_AGENTCORE_URL: http://localhost:8090
+    depends_on:
+      - api-gateway
+    networks:
+      - cat-demo
+
+  device-simulator:
+    build:
+      context: device-simulator
+    container_name: cat-demo-device-simulator
+    ports:
+      - "3001:3000"
+    environment:
+      REACT_APP_API_GATEWAY_URL: http://localhost:8080
+      REACT_APP_DEVICE_SERVICE_URL: http://localhost:8082
+    depends_on:
+      - api-gateway
+    networks:
+      - cat-demo
+
+  admin-console:
+    build:
+      context: admin-console
+    container_name: cat-demo-admin-console
+    ports:
+      - "3002:3000"
+    environment:
+      REACT_APP_API_GATEWAY_URL: http://localhost:8080
+    depends_on:
+      - api-gateway
+    networks:
+      - cat-demo
+
+volumes:
+  postgres-data:
+
+networks:
+  cat-demo:
+    driver: bridge
